@@ -1,13 +1,23 @@
-from openai import OpenAI
-from pathlib import Path
-from loguru import logger
+import os
+import re
 import time
+from pathlib import Path
 
+import torch
+from loguru import logger
+from peft import PeftModel
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    BitsAndBytesConfig,
+)
 
-api_key = (
-    (Path(__file__).parent / "openai.key").read_text().strip()
-)  # you need to create a file named "openai.key" and put your API key in it
-client = OpenAI(api_key=api_key)
+BASE_MODEL = "Qwen/Qwen2.5-Coder-7B-Instruct"
+ADAPTER_PATH = Path(__file__).parent.parent / "lora-adapter"
+MAX_NEW_TOKENS = 4096
+# The adapter was trained QLoRA-style, so a 4-bit NF4 base matches training
+# and fits the 7B model in ~5 GB of VRAM. KERNELGPT_4BIT=0 loads full precision.
+LOAD_IN_4BIT = os.environ.get("KERNELGPT_4BIT", "1") == "1"
 
 system_message = (
     "You are Syzkaller specification generator and "
@@ -15,94 +25,67 @@ system_message = (
     "You only reply with JSON."
 )
 
+_tokenizer = None
+_model = None
 
-def query_gpt4(prompt: str, temperature=0.1):
-    max_tokens = 4096
-    failure_count = 0
-    while True:
-        try:
-            logger.info(f"Invoke GPT-4 with max_tokens={max_tokens}")
-            t_start = time.time()
-            response = client.chat.completions.create(
-                model="gpt-4-1106-preview",
-                messages=[
-                    {"role": "system", "content": system_message},
-                    {"role": "user", "content": prompt},
-                ],
-                max_tokens=max_tokens,
-                response_format={"type": "json_object"},
-                temperature=temperature,
-                n=1,
+
+def load_model():
+    """Load the base model with the LoRA adapter once and cache it."""
+    global _tokenizer, _model
+    if _model is None:
+        logger.info(f"Loading {BASE_MODEL} with adapter {ADAPTER_PATH}")
+        _tokenizer = AutoTokenizer.from_pretrained(ADAPTER_PATH)
+        quantization = None
+        if LOAD_IN_4BIT:
+            quantization = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.bfloat16,
             )
-            g_time = time.time() - t_start
-            logger.info(f"GPT-4 response time: {g_time}")
-            break
-        except Exception as e:
-            failure_count += 1
-            logger.info(f"Exception: {e}")
-            if "maximum context length" in str(e):
-                max_tokens = max_tokens // 2
-                logger.info(f"Reduce max_tokens to {max_tokens}")
-            if failure_count > 20:
-                logger.error("Too many failures, skip this prompt")
-                break
-            time.sleep(10)
-    if failure_count > 20:
-        return None
-    return response.choices[0].message.content
+        base_model = AutoModelForCausalLM.from_pretrained(
+            BASE_MODEL,
+            dtype="auto",
+            device_map="auto",
+            quantization_config=quantization,
+        )
+        _model = PeftModel.from_pretrained(base_model, ADAPTER_PATH)
+        _model.eval()
+    return _tokenizer, _model
 
 
-def extract_code_block(text: str):
-    lines = text.split("\n")
-    code_block = []
-    in_code_block = False
-    for line in lines:
-        if line.strip() in ["```", "```json"]:
-            in_code_block = not in_code_block
-        elif in_code_block:
-            code_block.append(line)
-    return "\n".join(code_block)
+def extract_json(text: str):
+    """Strip a markdown code fence if the model wrapped its JSON in one."""
+    match = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
+    return match.group(1).strip() if match else text.strip()
 
 
-def query_ollm(prompt: str, temperature=0.1):
-    ollm_client = OpenAI(api_key="EMPTY", base_url="http://localhost:9999/v1")
-    ollm_name = "TheBloke/deepseek-coder-33B-instruct-AWQ"
-    max_tokens = 4096
-    failure_count = 0
-    while True:
-        try:
-            logger.info(f"Invoke OLLM with max_tokens={max_tokens}")
-            t_start = time.time()
-            response = ollm_client.chat.completions.create(
-                model=ollm_name,
-                messages=[
-                    {"role": "system", "content": system_message},
-                    {"role": "user", "content": prompt},
-                ],
-                max_tokens=max_tokens,
-                stop=["}\n```"],
+def query_llm(prompt: str, temperature=0.1):
+    tokenizer, model = load_model()
+    messages = [
+        {"role": "system", "content": system_message},
+        {"role": "user", "content": prompt},
+    ]
+    try:
+        logger.info(f"Invoke LLM with max_new_tokens={MAX_NEW_TOKENS}")
+        t_start = time.time()
+        inputs = tokenizer.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            return_tensors="pt",
+            return_dict=True,
+        ).to(model.device)
+        with torch.no_grad():
+            output = model.generate(
+                **inputs,
+                max_new_tokens=MAX_NEW_TOKENS,
+                do_sample=True,
                 temperature=temperature,
-                n=1,
             )
-            g_time = time.time() - t_start
-            logger.info(f"OLLM response time: {g_time}")
-            break
-        except Exception as e:
-            failure_count += 1
-            logger.info(f"Exception: {e}")
-            if "maximum context length" in str(e):
-                max_tokens = max_tokens // 2
-                logger.info(f"Reduce max_tokens to {max_tokens}")
-            if failure_count > 20:
-                logger.error("Too many failures, skip this prompt")
-                break
-            time.sleep(10)
-    if failure_count > 20:
+        g_time = time.time() - t_start
+        logger.info(f"LLM response time: {g_time}")
+    except Exception as e:
+        logger.error(f"Exception: {e}, skip this prompt")
         return None
-
-    # Add the post-processing step
-    answer = response.choices[0].message.content
-    answer += "}\n```"
-    answer = extract_code_block(answer)
-
-    return answer
+    prompt_len = inputs["input_ids"].shape[1]
+    answer = tokenizer.decode(output[0][prompt_len:], skip_special_tokens=True)
+    return extract_json(answer)

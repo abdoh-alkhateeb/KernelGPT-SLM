@@ -1,5 +1,6 @@
 import argparse
 import filecmp
+import os
 import secrets
 import shutil
 import subprocess
@@ -78,10 +79,14 @@ def build_linux(linux: Path, jobs, auto_check):
         logger.info("vmlinux present, skip building linux")
         return
 
-    subprocess.run(["make", "olddefconfig"], cwd=linux)
+    # KERNEL_CC selects the compiler (e.g. gcc-14 where the default gcc is
+    # too new for this kernel); unset keeps the kernel's default.
+    cc = os.environ.get("KERNEL_CC")
+    cc_args = [f"CC={cc}", f"HOSTCC={cc}"] if cc else []
+    subprocess.run(["make", *cc_args, "olddefconfig"], cwd=linux)
 
     logger.info(f"Building linux kernel at {linux}")
-    r = subprocess.run(["make", "-j", str(jobs)], cwd=linux)
+    r = subprocess.run(["make", *cc_args, "-j", str(jobs)], cwd=linux)
 
     check_return(r.returncode, f"build linux kernel at {linux}")
 

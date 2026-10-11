@@ -1,5 +1,10 @@
-transformers
+torch
+transformers>=4.56
+peft>=0.21.0
+accelerate
+bitsandbytes
 rich
 loguru
 pyyaml
-openai
+psutil
+tqdm

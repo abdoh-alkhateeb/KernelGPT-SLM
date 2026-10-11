@@ -15,3 +15,5 @@ starcoder-*/
 *.tmp
 tmp
 .cache
+.venv/
+.setup/

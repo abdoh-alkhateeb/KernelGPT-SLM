@@ -35,7 +35,7 @@ from gen_utils import (
     update_spec_dict,
     update_types,
 )
-from llm_utils import query_gpt4
+from llm_utils import query_llm
 from loguru import logger
 from output_spec import initialize_spec_dict, is_primitive_type, output_spec
 from ret_types import RetTypes
@@ -50,7 +50,7 @@ OUTPUT_DIR = Path("spec-output")
 
 def gen_answer(prompt: str, prompt_path: Path, answer_path: Path):
     prompt_path.write_text(prompt)
-    answer = query_gpt4(prompt)
+    answer = query_llm(prompt)
     if answer is None:
         logger.error(f"[{prompt_path}] Step 1 failed")
         return
@@ -79,7 +79,7 @@ def gen_init(file_path: Path, ops_code, ops_name, prompt_output_path, ops_type):
             ops_type,
         )
         open_prompt_path.write_text(open_prompt)
-        open_answer = query_gpt4(open_prompt)
+        open_answer = query_llm(open_prompt)
         open_output_path.write_text(open_answer)
     else:
         open_answer = open_output_path.read_text()
@@ -181,7 +181,7 @@ def gen_sockaddr(file_path, bind_name, bind_code):
     else:
         prompt = gen_sockaddr_prompt(file_path, bind_code)
         prompt_path.write_text(prompt)
-        answer = query_gpt4(prompt)
+        answer = query_llm(prompt)
         if answer is None:
             logger.error(f"[{file_path}] Step 0 failed")
             return

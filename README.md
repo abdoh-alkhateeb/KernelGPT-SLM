@@ -78,6 +78,21 @@ Before you begin, ensure you have the following installed and configured:
 
 The core workflow involves analyzing the kernel source, generating specifications using the LLM, and then validating/refining them.
 
+### Quick Start (automated)
+
+On a fresh Ubuntu x86_64 machine with an NVIDIA GPU, two scripts do everything below:
+
+```bash
+./setup.sh      # installs packages, driver, Docker, Python env; builds and analyzes the kernel
+                # (asks for one reboot on the first run; re-run it afterwards)
+./run.sh 10     # generates 10 specs with the local model and validates them with Syzkaller
+```
+
+`setup.sh` runs the clang-14 kernel build and the analyzer inside a Docker container
+(`spec-gen/analyzer/Dockerfile`), since current Ubuntu releases no longer ship clang-14.
+Results land in `spec-gen/eval-output/return.txt` (one `<spec>,<returncode>` line per spec;
+`0` means valid). The manual steps follow.
+
 ### Step 1: Kernel Preparation & Static Analysis
 
 This step analyzes the Linux kernel source code to extract information needed by the LLM.
@@ -155,12 +170,8 @@ This step analyzes the Linux kernel source code to extract information needed by
 
 ### Step 2: Generate Specifications with KernelGPT
 
-1.  **Set OpenAI API Key:**
-    Create a file named `openai.key` in the `spec-gen/` directory and place your OpenAI API key inside it.
-
-    ```bash
-    echo "YOUR_API_KEY_HERE" > spec-gen/openai.key
-    ```
+1.  **Model Setup:**
+    Specifications are generated locally with [Qwen2.5-Coder-7B-Instruct](https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct) and the LoRA adapter in `lora-adapter/`. The base model is downloaded from Hugging Face on first use (a GPU with enough memory for the 7B model is recommended).
 
 2.  **Run Specification Generation:**
 
